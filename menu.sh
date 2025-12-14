@@ -1,5 +1,5 @@
 #!/bin/bash
-# DarkHole Ultimate v5 Final - Fix Password & Auto Hub Login
+# DarkHole Ultimate v5 Final Fixed
 # Admin default password: gstgg47e
 # Hub: DarkHole
 
@@ -37,10 +37,10 @@ run_vpncmd_server() {
 }
 
 run_vpncmd_hub() {
-    # Login hub with stdin password, then run command
+    CMD="$1"
     $VPN_CMD localhost /SERVER /HUB:$HUB_NAME <<EOF
 $ADMIN_PASSWORD
-$1
+$CMD
 exit
 EOF
 }
@@ -58,9 +58,10 @@ setup_hub() {
 
     # Enable SecureNAT
     run_vpncmd_hub "SecureNatEnable"
+    echo "SecureNAT enabled."
 }
 
-# --- Setup Listeners (Server level) ---
+# --- Setup Listeners ---
 setup_listeners() {
     echo "=== Setting up server listeners ==="
     run_vpncmd_server "ListenerCreate 443" || true
@@ -91,6 +92,7 @@ setup_nat() {
     ufw allow 443/tcp
     ufw allow 500/udp
     ufw allow 4500/udp
+    echo "NAT and firewall configured."
 }
 
 # --- Menu functions ---
@@ -142,7 +144,7 @@ stop_service() { sudo systemctl stop vpnserver && echo "VPN Server stopped."; }
 restart_service() { sudo systemctl restart vpnserver && echo "VPN Server restarted."; }
 
 # --- Initial Setup ---
-echo "=== DarkHole Ultimate v5 Final Setup Starting ==="
+echo "=== DarkHole Ultimate v5 Final Fixed Setup Starting ==="
 setup_hub
 setup_listeners
 setup_users
