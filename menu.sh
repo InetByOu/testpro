@@ -1,5 +1,5 @@
 #!/bin/bash
-# DarkHole Ultimate v5 Final - Revisi Listener
+# DarkHole Ultimate v5 Final - Fix Password & Auto Hub Login
 # Admin default password: gstgg47e
 # Hub: DarkHole
 
@@ -32,23 +32,28 @@ if [ ! -f "$JSON_FILE" ]; then
 fi
 
 # --- Helper functions ---
-run_vpncmd_hub() {
-    $VPN_CMD localhost /SERVER /HUB:$HUB_NAME /PASSWORD:$ADMIN_PASSWORD /CMD "$1"
-}
-
 run_vpncmd_server() {
     $VPN_CMD localhost /SERVER /PASSWORD:$ADMIN_PASSWORD /CMD "$1"
+}
+
+run_vpncmd_hub() {
+    # Login hub with stdin password, then run command
+    $VPN_CMD localhost /SERVER /HUB:$HUB_NAME <<EOF
+$ADMIN_PASSWORD
+$1
+exit
+EOF
 }
 
 # --- Setup Hub + SecureNAT ---
 setup_hub() {
     echo "=== Setting up Hub $HUB_NAME ==="
-    HUB_EXIST=$($VPN_CMD localhost /SERVER /CMD HubList | grep -w "$HUB_NAME" || true)
+    HUB_EXIST=$(run_vpncmd_server "HubList" | grep -w "$HUB_NAME" || true)
     if [ -z "$HUB_EXIST" ]; then
-        $VPN_CMD localhost /SERVER /CMD HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD
+        run_vpncmd_server "HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD"
         echo "Hub $HUB_NAME created."
     else
-        echo "Hub $HUB_NAME already exists. Using admin password..."
+        echo "Hub $HUB_NAME already exists."
     fi
 
     # Enable SecureNAT
