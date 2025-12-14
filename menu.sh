@@ -1,7 +1,8 @@
 #!/bin/bash
-# DarkHole VPN Interactive Manager
+# DarkHole Ultimate Installer + Manager
 # Admin default password: gstgg47e
 # Hub: DarkHole
+# Fully automatic setup + menu
 
 VPN_DIR="/usr/local/vpnserver"
 VPN_CMD="$VPN_DIR/vpncmd"
@@ -9,115 +10,167 @@ HUB_NAME="DarkHole"
 ADMIN_PASSWORD="gstgg47e"
 JSON_FILE="$VPN_DIR/darkhole_users.json"
 
+# --- Users array (bisa diubah) ---
+USERS=(
+    "user1:pass1"
+    "user2:pass2"
+    "test:testing123"
+)
+
 set -e
 
-# --- Install jq if not present ---
+# --- Install dependencies ---
 if ! command -v jq &> /dev/null; then
-    echo "jq not found, installing..."
+    echo "Installing jq..."
     apt update && apt install -y jq
 fi
 
-# --- Ensure users JSON exists ---
+if ! command -v ufw &> /dev/null; then
+    echo "Installing ufw..."
+    apt update && apt install -y ufw
+fi
+
+# --- Ensure VPN server directory exists ---
+if [ ! -d "$VPN_DIR" ]; then
+    echo "VPN Server directory not found at $VPN_DIR"
+    echo "Please install SoftEther VPN first."
+    exit 1
+fi
+
+# --- Ensure users.json exists ---
 if [ ! -f "$JSON_FILE" ]; then
-    echo "Creating default darkhole_users.json"
+    echo "Creating darkhole_users.json"
     cat <<EOL > "$JSON_FILE"
 {
-  "users": [
-    { "username": "user1", "password": "pass1" }
-  ]
+  "users": []
 }
 EOL
 fi
 
-# --- Functions ---
+# --- Helper function ---
+run_vpncmd() {
+    $VPN_CMD localhost /SERVER /ADMINPASSWORD:$ADMIN_PASSWORD /CMD "$1"
+}
 
-function add_update_user() {
+# --- Setup Hub + SecureNAT + Listener ---
+setup_hub() {
+    echo "Setting up hub $HUB_NAME..."
+    # Create hub if not exist
+    HUB_EXIST=$(run_vpncmd "HubList" | grep -w "$HUB_NAME" || true)
+    if [ -z "$HUB_EXIST" ]; then
+        run_vpncmd "HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD"
+        echo "Hub $HUB_NAME created."
+    else
+        echo "Hub $HUB_NAME already exists."
+    fi
+
+    # Enable SecureNAT
+    run_vpncmd "Hub $HUB_NAME /CMD SecureNatEnable"
+    echo "SecureNAT enabled."
+
+    # Enable listeners
+    for port in 443 500 4500; do
+        LISTENER=$(run_vpncmd "ListenerList" | grep -w "$port" || true)
+        if [ -z "$LISTENER" ]; then
+            run_vpncmd "ListenerCreate $port"
+            echo "Listener TCP/UDP $port enabled."
+        fi
+    done
+}
+
+# --- Add multi-users ---
+setup_users() {
+    echo "Setting up default users..."
+    for u in "${USERS[@]}"; do
+        IFS=":" read -r username password <<< "$u"
+        EXIST=$(run_vpncmd "Hub $HUB_NAME /CMD UserList" | grep -w "$username" || true)
+        if [ -z "$EXIST" ]; then
+            run_vpncmd "Hub $HUB_NAME /CMD UserCreate $username"
+            run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $username $password"
+            echo "User $username created."
+        else
+            run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $username $password"
+            echo "User $username password updated."
+        fi
+
+        # Update JSON
+        jq --arg u "$username" --arg p "$password" '
+        .users |= map(select(.username != $u)) + [{"username":$u,"password":$p}]
+        ' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
+    done
+}
+
+# --- Setup NAT / iptables ---
+setup_nat() {
+    echo "Setting up NAT / firewall rules..."
+    SYS_IF=$(ip -4 route ls|grep default|awk '{print $5}'|head -1)
+    iptables -t nat -A POSTROUTING -s 10.66.66.0/24 -o $SYS_IF -j MASQUERADE || true
+    ufw allow 443/tcp
+    ufw allow 500/udp
+    ufw allow 4500/udp
+}
+
+# --- Menu Functions ---
+add_update_user() {
     echo -n "Enter username: "
     read USERNAME
     echo -n "Enter password: "
     read PASSWORD
-
-    USER_EXIST=$($VPN_CMD <<EOF
-Hub $HUB_NAME
-UserList
-EOF
-)
-    if echo "$USER_EXIST" | grep -q "$USERNAME"; then
-        echo "Updating password for $USERNAME..."
-        $VPN_CMD <<EOF
-Hub $HUB_NAME
-UserPasswordSet $USERNAME $PASSWORD
-EOF
-    else
-        echo "Creating new user $USERNAME..."
-        $VPN_CMD <<EOF
-Hub $HUB_NAME
-UserCreate $USERNAME
-UserPasswordSet $USERNAME $PASSWORD
-EOF
+    EXIST=$(run_vpncmd "Hub $HUB_NAME /CMD UserList" | grep -w "$USERNAME" || true)
+    if [ -z "$EXIST" ]; then
+        run_vpncmd "Hub $HUB_NAME /CMD UserCreate $USERNAME"
+        echo "User $USERNAME created."
     fi
-
+    run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $USERNAME $PASSWORD"
     jq --arg u "$USERNAME" --arg p "$PASSWORD" '
     .users |= map(select(.username != $u)) + [{"username":$u,"password":$p}]
     ' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
-
-    echo "User $USERNAME added/updated successfully."
+    echo "User $USERNAME added/updated."
 }
 
-function remove_user() {
+remove_user() {
     echo -n "Enter username to remove: "
     read USERNAME
-
-    $VPN_CMD <<EOF
-Hub $HUB_NAME
-UserDelete $USERNAME
-EOF
-
+    run_vpncmd "Hub $HUB_NAME /CMD UserDelete $USERNAME"
     jq --arg u "$USERNAME" '.users |= map(select(.username != $u))' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
-
-    echo "User $USERNAME removed successfully."
+    echo "User $USERNAME removed."
 }
 
-function list_users() {
+list_users() {
     echo "=== Users in Hub $HUB_NAME ==="
-    $VPN_CMD <<EOF
-Hub $HUB_NAME
-UserList
-EOF
+    run_vpncmd "Hub $HUB_NAME /CMD UserList"
 }
 
-function hub_status() {
+hub_status() {
     echo "=== Hub $HUB_NAME Status ==="
-    $VPN_CMD <<EOF
-Hub $HUB_NAME
-HubStatus
-EOF
+    run_vpncmd "Hub $HUB_NAME /CMD HubStatus"
 }
 
-function service_status() {
+service_status() {
     echo "=== DarkHole VPN Server Status ==="
     systemctl is-active --quiet vpnserver && STATUS="Running" || STATUS="Stopped"
     echo "Service: $STATUS"
-
     TOTAL_USER=$(jq '.users | length' $JSON_FILE)
     echo "Total users: $TOTAL_USER"
-
     echo "=== Active listeners ==="
-    $VPN_CMD <<EOF
-Hub $HUB_NAME
-ListenerList
-EOF
-
-    SERVER_IF=$(ip -4 route ls|grep default|awk '{print $5}'|head -1)
+    run_vpncmd "Hub $HUB_NAME /CMD ListenerList"
     echo "=== NAT / Port Forwarding Rules ==="
     iptables -t nat -L -n -v | grep MASQUERADE || echo "No NAT rules found"
 }
 
-function start_service() { sudo systemctl start vpnserver && echo "DarkHole VPN Server started."; }
-function stop_service() { sudo systemctl stop vpnserver && echo "DarkHole VPN Server stopped." ;}
-function restart_service() { sudo systemctl restart vpnserver && echo "DarkHole VPN Server restarted." ;}
+start_service() { sudo systemctl start vpnserver && echo "VPN Server started."; }
+stop_service() { sudo systemctl stop vpnserver && echo "VPN Server stopped."; }
+restart_service() { sudo systemctl restart vpnserver && echo "VPN Server restarted."; }
 
-# --- Menu ---
+# --- Run Setup ---
+echo "=== DarkHole Ultimate Setup Starting ==="
+setup_hub
+setup_users
+setup_nat
+start_service
+echo "=== DarkHole VPN Setup Complete ==="
+
+# --- Interactive Menu ---
 while true; do
     echo "=============================================="
     echo " DarkHole VPN Manager"
