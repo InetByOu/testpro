@@ -8,7 +8,7 @@ set -e
 VPN_CMD="/usr/local/vpnserver/vpncmd"
 
 # --- Server admin password ---
-ADMIN_PASSWORD="DarkHoleAdmin123"
+ADMIN_PASSWORD="gstgg47e"
 
 # --- Virtual Hub name ---
 HUB_NAME="DarkHole"
