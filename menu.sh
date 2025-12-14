@@ -1,5 +1,5 @@
 #!/bin/bash
-# DarkHole Ultimate v5 Final - SoftEther VPN Manager
+# DarkHole Ultimate v5 Final - Revisi Listener
 # Admin default password: gstgg47e
 # Hub: DarkHole
 
@@ -32,11 +32,15 @@ if [ ! -f "$JSON_FILE" ]; then
 fi
 
 # --- Helper functions ---
-run_vpncmd() {
+run_vpncmd_hub() {
     $VPN_CMD localhost /SERVER /HUB:$HUB_NAME /PASSWORD:$ADMIN_PASSWORD /CMD "$1"
 }
 
-# --- Setup Hub + NAT + Listener ---
+run_vpncmd_server() {
+    $VPN_CMD localhost /SERVER /PASSWORD:$ADMIN_PASSWORD /CMD "$1"
+}
+
+# --- Setup Hub + SecureNAT ---
 setup_hub() {
     echo "=== Setting up Hub $HUB_NAME ==="
     HUB_EXIST=$($VPN_CMD localhost /SERVER /CMD HubList | grep -w "$HUB_NAME" || true)
@@ -48,32 +52,33 @@ setup_hub() {
     fi
 
     # Enable SecureNAT
-    run_vpncmd "SecureNatEnable"
-
-    # Auto create listeners
-    for port in 443 500 4500; do
-        EXIST=$(run_vpncmd "ListenerList" | grep -w "$port" || true)
-        if [ -z "$EXIST" ]; then
-            run_vpncmd "ListenerCreate $port"
-            echo "Listener $port created."
-        fi
-    done
+    run_vpncmd_hub "SecureNatEnable"
 }
 
+# --- Setup Listeners (Server level) ---
+setup_listeners() {
+    echo "=== Setting up server listeners ==="
+    run_vpncmd_server "ListenerCreate 443" || true
+    run_vpncmd_server "ListenerCreateUDP 500" || true
+    run_vpncmd_server "ListenerCreateUDP 4500" || true
+}
+
+# --- Setup Users ---
 setup_users() {
     echo "=== Setting up default users ==="
     for u in "${USERS[@]}"; do
         IFS=":" read -r username password <<< "$u"
-        EXIST=$(run_vpncmd "UserList" | grep -w "$username" || true)
+        EXIST=$(run_vpncmd_hub "UserList" | grep -w "$username" || true)
         if [ -z "$EXIST" ]; then
-            run_vpncmd "UserCreate $username"
+            run_vpncmd_hub "UserCreate $username"
         fi
-        run_vpncmd "UserPasswordSet $username $password"
+        run_vpncmd_hub "UserPasswordSet $username $password"
         jq --arg u "$username" --arg p "$password" '.users |= map(select(.username != $u)) + [{"username":$u,"password":$p}]' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
         echo "User $username added/updated."
     done
 }
 
+# --- Setup NAT / firewall ---
 setup_nat() {
     echo "=== Setting up NAT / firewall ==="
     SYS_IF=$(ip -4 route ls|grep default|awk '{print $5}'|head -1)
@@ -87,30 +92,30 @@ setup_nat() {
 add_update_user() {
     read -p "Enter username: " USERNAME
     read -p "Enter password: " PASSWORD
-    EXIST=$(run_vpncmd "UserList" | grep -w "$USERNAME" || true)
+    EXIST=$(run_vpncmd_hub "UserList" | grep -w "$USERNAME" || true)
     if [ -z "$EXIST" ]; then
-        run_vpncmd "UserCreate $USERNAME"
+        run_vpncmd_hub "UserCreate $USERNAME"
     fi
-    run_vpncmd "UserPasswordSet $USERNAME $PASSWORD"
+    run_vpncmd_hub "UserPasswordSet $USERNAME $PASSWORD"
     jq --arg u "$USERNAME" --arg p "$PASSWORD" '.users |= map(select(.username != $u)) + [{"username":$u,"password":$p}]' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
     echo "User $USERNAME added/updated."
 }
 
 remove_user() {
     read -p "Enter username to remove: " USERNAME
-    run_vpncmd "UserDelete $USERNAME"
+    run_vpncmd_hub "UserDelete $USERNAME"
     jq --arg u "$USERNAME" '.users |= map(select(.username != $u))' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
     echo "User $USERNAME removed."
 }
 
 list_users() {
     echo "=== Users in Hub $HUB_NAME ==="
-    run_vpncmd "UserList"
+    run_vpncmd_hub "UserList"
 }
 
 hub_status() {
     echo "=== Hub $HUB_NAME Status ==="
-    run_vpncmd "HubStatus"
+    run_vpncmd_hub "HubStatus"
 }
 
 service_status() {
@@ -119,10 +124,10 @@ service_status() {
     echo "Service: $STATUS"
     TOTAL_USER=$(jq '.users | length' $JSON_FILE)
     echo "Total users: $TOTAL_USER"
-    ONLINE_USERS=$(run_vpncmd "SessionList" | grep -c "User Name")
+    ONLINE_USERS=$(run_vpncmd_hub "SessionList" | grep -c "User Name")
     echo "Users online: $ONLINE_USERS"
     echo "=== Active listeners ==="
-    run_vpncmd "ListenerList"
+    run_vpncmd_server "ListenerList"
     echo "=== NAT / Port Forwarding Rules ==="
     iptables -t nat -L -n -v | grep MASQUERADE || echo "No NAT rules"
 }
@@ -134,6 +139,7 @@ restart_service() { sudo systemctl restart vpnserver && echo "VPN Server restart
 # --- Initial Setup ---
 echo "=== DarkHole Ultimate v5 Final Setup Starting ==="
 setup_hub
+setup_listeners
 setup_users
 setup_nat
 start_service
