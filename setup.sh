@@ -1,67 +1,83 @@
 #!/bin/bash
-# SoftEther VPN ZiVPN-like Multi-user from JSON
-# Hub: DarkHole
-# SecureNAT + TCP/UDP listener + NAT/iptables
-# Users loaded from users.json
+# DarkHole WireGuard UDP Installer
+# Author: DarkHole Team
+# Auto install WireGuard, NAT, and service
+# Server UDP port: 5667
+# Server internal VPN subnet: 10.66.66.0/24
 
 set -e
 
-VPN_CMD="/usr/local/vpnserver/vpncmd"
-HUB_NAME="DarkHole"
-ADMIN_PASSWORD="gstgg47e"
+WG_CONF_DIR="/etc/darkhole"
+WG_SERVER_CONF="$WG_CONF_DIR/wg0.conf"
+WG_PORT=5667
+WG_SUBNET="10.66.66.0/24"
+WG_SERVER_IP="10.66.66.1"
+WG_INTERFACE="wg0"
 
-TCP_PORT=443
-UDP_PORT1=500
-UDP_PORT2=4500
+# --- Install dependencies ---
+echo "=== Installing dependencies ==="
+apt update
+apt install -y wireguard qrencode iptables-persistent ufw curl
 
-JSON_FILE="/usr/local/vpnserver/users.json"
+# --- Create config directory ---
+mkdir -p $WG_CONF_DIR
+chmod 700 $WG_CONF_DIR
 
-# --- Install jq if not present (to parse JSON) ---
-if ! command -v jq &> /dev/null; then
-    echo "jq not found, installing..."
-    apt update && apt install jq -y
-fi
+# --- Generate server key pair ---
+echo "=== Generating server keys ==="
+SERVER_PRIV=$(wg genkey)
+SERVER_PUB=$(echo $SERVER_PRIV | wg pubkey)
 
-echo "=== Configuring SoftEther VPN Server ==="
-
-# 1️⃣ Set admin password, create hub, enable SecureNAT & listeners
-$VPN_CMD <<EOF
-ServerPasswordSet $ADMIN_PASSWORD
-HubCreate $HUB_NAME
-Hub $HUB_NAME
-HubEnable
-SecureNatEnable
-ListenerCreate $TCP_PORT /TCP
-ListenerCreate $UDP_PORT1 /UDP
-ListenerCreate $UDP_PORT2 /UDP
+# --- Create wg0.conf ---
+cat > $WG_SERVER_CONF <<EOF
+[Interface]
+Address = $WG_SERVER_IP/24
+ListenPort = $WG_PORT
+PrivateKey = $SERVER_PRIV
+SaveConfig = true
 EOF
 
-# 2️⃣ Add users from JSON
-echo "=== Adding Users from $JSON_FILE ==="
-USER_COUNT=$(jq '.users | length' $JSON_FILE)
+chmod 600 $WG_SERVER_CONF
 
-for (( i=0; i<$USER_COUNT; i++ ))
-do
-    USERNAME=$(jq -r ".users[$i].username" $JSON_FILE)
-    PASSWORD=$(jq -r ".users[$i].password" $JSON_FILE)
+# --- Enable IP forwarding ---
+echo "=== Enabling IP forwarding ==="
+sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 
-    $VPN_CMD <<EOF
-Hub $HUB_NAME
-UserCreate $USERNAME
-UserPasswordSet $USERNAME $PASSWORD
+# --- Setup NAT (iptables + UFW) ---
+echo "=== Setting up NAT / firewall ==="
+SYS_IF=$(ip -4 route ls | grep default | awk '{print $5}' | head -1)
+iptables -t nat -A POSTROUTING -s $WG_SUBNET -o $SYS_IF -j MASQUERADE
+iptables-save > /etc/iptables/rules.v4
+
+ufw allow $WG_PORT/udp
+ufw enable || true
+
+# --- Create systemd service ---
+echo "=== Creating systemd service ==="
+cat > /etc/systemd/system/darkhole.service <<EOF
+[Unit]
+Description=DarkHole WireGuard VPN
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/wg-quick up $WG_INTERFACE
+ExecStop=/usr/bin/wg-quick down $WG_INTERFACE
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 EOF
-    echo "User $USERNAME created with password $PASSWORD"
-done
 
-# 3️⃣ Setup NAT + iptables
-echo "=== Configuring NAT + iptables ==="
-SERVER_IF=$(ip -4 route ls | grep default | awk '{print $5}' | head -1)
+# --- Enable & start service ---
+systemctl daemon-reload
+systemctl enable darkhole
+systemctl start darkhole
 
-iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o $SERVER_IF -j MASQUERADE
-ufw allow $TCP_PORT/tcp
-ufw allow $UDP_PORT1/udp
-ufw allow $UDP_PORT2/udp
-
-echo "=== SoftEther ZiVPN-like configuration complete ==="
-echo "Hub: $HUB_NAME | Admin Password: $ADMIN_PASSWORD"
-echo "Users loaded from $JSON_FILE"
+echo "=== DarkHole WireGuard UDP Installation Complete ==="
+echo "Server public key: $SERVER_PUB"
+echo "Server Listen Port: $WG_PORT"
+echo "VPN Subnet: $WG_SUBNET"
+echo "Config directory: $WG_CONF_DIR"
+echo "Use 'systemctl status darkhole' to check status"
