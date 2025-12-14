@@ -1,26 +1,26 @@
 #!/bin/bash
-# SoftEther VPN ZiVPN-like Auto Configuration
+# SoftEther VPN ZiVPN-like Multi-user from JSON
 # Hub: DarkHole
-# Multi-user setup + SecureNAT + TCP/UDP listener + NAT/iptables
+# SecureNAT + TCP/UDP listener + NAT/iptables
+# Users loaded from users.json
 
 set -e
 
 VPN_CMD="/usr/local/vpnserver/vpncmd"
-
-# --- Server admin password ---
+HUB_NAME="DarkHole"
 ADMIN_PASSWORD="gstgg47e"
 
-# --- Virtual Hub name ---
-HUB_NAME="DarkHole"
-
-# --- UDP/TCP listeners ---
 TCP_PORT=443
 UDP_PORT1=500
 UDP_PORT2=4500
 
-# --- Multi-user list (username:password) ---
-declare -A USERS
-USERS=( ["user1"]="pass1" ["user2"]="pass2" ["user3"]="pass3" )
+JSON_FILE="/usr/local/vpnserver/users.json"
+
+# --- Install jq if not present (to parse JSON) ---
+if ! command -v jq &> /dev/null; then
+    echo "jq not found, installing..."
+    apt update && apt install jq -y
+fi
 
 echo "=== Configuring SoftEther VPN Server ==="
 
@@ -36,16 +36,21 @@ ListenerCreate $UDP_PORT1 /UDP
 ListenerCreate $UDP_PORT2 /UDP
 EOF
 
-# 2️⃣ Add multi-users
-echo "=== Adding Users ==="
-for USER in "${!USERS[@]}"; do
-    PASSWORD=${USERS[$USER]}
+# 2️⃣ Add users from JSON
+echo "=== Adding Users from $JSON_FILE ==="
+USER_COUNT=$(jq '.users | length' $JSON_FILE)
+
+for (( i=0; i<$USER_COUNT; i++ ))
+do
+    USERNAME=$(jq -r ".users[$i].username" $JSON_FILE)
+    PASSWORD=$(jq -r ".users[$i].password" $JSON_FILE)
+
     $VPN_CMD <<EOF
 Hub $HUB_NAME
-UserCreate $USER
-UserPasswordSet $USER $PASSWORD
+UserCreate $USERNAME
+UserPasswordSet $USERNAME $PASSWORD
 EOF
-    echo "User $USER created with password $PASSWORD"
+    echo "User $USERNAME created with password $PASSWORD"
 done
 
 # 3️⃣ Setup NAT + iptables
@@ -59,6 +64,4 @@ ufw allow $UDP_PORT2/udp
 
 echo "=== SoftEther ZiVPN-like configuration complete ==="
 echo "Hub: $HUB_NAME | Admin Password: $ADMIN_PASSWORD"
-for USER in "${!USERS[@]}"; do
-    echo "User: $USER | Password: ${USERS[$USER]}"
-done
+echo "Users loaded from $JSON_FILE"
