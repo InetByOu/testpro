@@ -1,8 +1,7 @@
 #!/bin/bash
-# DarkHole Ultimate v5 - SoftEther VPN Manager
+# DarkHole Ultimate v5 Final - SoftEther VPN Manager
 # Admin default password: gstgg47e
 # Hub: DarkHole
-# Full ZiVPN-like functionality
 
 VPN_DIR="/usr/local/vpnserver"
 VPN_CMD="$VPN_DIR/vpncmd"
@@ -34,7 +33,7 @@ fi
 
 # --- Helper functions ---
 run_vpncmd() {
-    $VPN_CMD localhost /SERVER /HUB:$HUB_NAME /CMD "$1"
+    $VPN_CMD localhost /SERVER /HUB:$HUB_NAME /PASSWORD:$ADMIN_PASSWORD /CMD "$1"
 }
 
 # --- Setup Hub + NAT + Listener ---
@@ -44,7 +43,11 @@ setup_hub() {
     if [ -z "$HUB_EXIST" ]; then
         $VPN_CMD localhost /SERVER /CMD HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD
         echo "Hub $HUB_NAME created."
+    else
+        echo "Hub $HUB_NAME already exists. Using admin password..."
     fi
+
+    # Enable SecureNAT
     run_vpncmd "SecureNatEnable"
 
     # Auto create listeners
@@ -129,7 +132,7 @@ stop_service() { sudo systemctl stop vpnserver && echo "VPN Server stopped."; }
 restart_service() { sudo systemctl restart vpnserver && echo "VPN Server restarted."; }
 
 # --- Initial Setup ---
-echo "=== DarkHole Ultimate v5 Setup Starting ==="
+echo "=== DarkHole Ultimate v5 Final Setup Starting ==="
 setup_hub
 setup_users
 setup_nat
@@ -139,7 +142,7 @@ echo "=== DarkHole VPN Setup Complete ==="
 # --- Interactive Menu ---
 while true; do
     echo "=============================================="
-    echo " DarkHole VPN Manager v5"
+    echo " DarkHole VPN Manager v5 Final"
     echo " Hub: $HUB_NAME | Admin: $ADMIN_PASSWORD"
     echo "=============================================="
     echo "1) Add/Update User"
