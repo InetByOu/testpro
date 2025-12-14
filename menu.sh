@@ -1,5 +1,6 @@
 #!/bin/bash
 # DarkHole Ultimate Installer + Manager
+# Compatible SoftEther v4.44+
 # Admin default password: gstgg47e
 # Hub: DarkHole
 # Fully automatic setup + menu
@@ -10,7 +11,7 @@ HUB_NAME="DarkHole"
 ADMIN_PASSWORD="gstgg47e"
 JSON_FILE="$VPN_DIR/darkhole_users.json"
 
-# --- Users array (bisa diubah) ---
+# --- Users array ---
 USERS=(
     "user1:pass1"
     "user2:pass2"
@@ -49,31 +50,32 @@ fi
 
 # --- Helper function ---
 run_vpncmd() {
-    $VPN_CMD localhost /SERVER /ADMINPASSWORD:$ADMIN_PASSWORD /CMD "$1"
+    # $1 = full command string
+    $VPN_CMD localhost /SERVER /HUB:$HUB_NAME /CMD "$1"
 }
 
 # --- Setup Hub + SecureNAT + Listener ---
 setup_hub() {
     echo "Setting up hub $HUB_NAME..."
-    # Create hub if not exist
-    HUB_EXIST=$(run_vpncmd "HubList" | grep -w "$HUB_NAME" || true)
+    # Check if hub exists
+    HUB_EXIST=$($VPN_CMD localhost /SERVER /CMD HubList | grep -w "$HUB_NAME" || true)
     if [ -z "$HUB_EXIST" ]; then
-        run_vpncmd "HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD"
-        echo "Hub $HUB_NAME created."
+        # Create hub with admin password
+        $VPN_CMD localhost /SERVER /CMD HubCreate $HUB_NAME /PASSWORD:$ADMIN_PASSWORD
+        echo "Hub $HUB_NAME created with admin password."
     else
         echo "Hub $HUB_NAME already exists."
     fi
 
     # Enable SecureNAT
-    run_vpncmd "Hub $HUB_NAME /CMD SecureNatEnable"
-    echo "SecureNAT enabled."
+    run_vpncmd "SecureNatEnable"
 
-    # Enable listeners
+    # Enable listeners TCP 443 & UDP 500/4500
     for port in 443 500 4500; do
         LISTENER=$(run_vpncmd "ListenerList" | grep -w "$port" || true)
         if [ -z "$LISTENER" ]; then
             run_vpncmd "ListenerCreate $port"
-            echo "Listener TCP/UDP $port enabled."
+            echo "Listener $port enabled."
         fi
     done
 }
@@ -83,13 +85,13 @@ setup_users() {
     echo "Setting up default users..."
     for u in "${USERS[@]}"; do
         IFS=":" read -r username password <<< "$u"
-        EXIST=$(run_vpncmd "Hub $HUB_NAME /CMD UserList" | grep -w "$username" || true)
+        EXIST=$(run_vpncmd "UserList" | grep -w "$username" || true)
         if [ -z "$EXIST" ]; then
-            run_vpncmd "Hub $HUB_NAME /CMD UserCreate $username"
-            run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $username $password"
+            run_vpncmd "UserCreate $username"
+            run_vpncmd "UserPasswordSet $username $password"
             echo "User $username created."
         else
-            run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $username $password"
+            run_vpncmd "UserPasswordSet $username $password"
             echo "User $username password updated."
         fi
 
@@ -116,12 +118,12 @@ add_update_user() {
     read USERNAME
     echo -n "Enter password: "
     read PASSWORD
-    EXIST=$(run_vpncmd "Hub $HUB_NAME /CMD UserList" | grep -w "$USERNAME" || true)
+    EXIST=$(run_vpncmd "UserList" | grep -w "$USERNAME" || true)
     if [ -z "$EXIST" ]; then
-        run_vpncmd "Hub $HUB_NAME /CMD UserCreate $USERNAME"
+        run_vpncmd "UserCreate $USERNAME"
         echo "User $USERNAME created."
     fi
-    run_vpncmd "Hub $HUB_NAME /CMD UserPasswordSet $USERNAME $PASSWORD"
+    run_vpncmd "UserPasswordSet $USERNAME $PASSWORD"
     jq --arg u "$USERNAME" --arg p "$PASSWORD" '
     .users |= map(select(.username != $u)) + [{"username":$u,"password":$p}]
     ' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
@@ -131,19 +133,19 @@ add_update_user() {
 remove_user() {
     echo -n "Enter username to remove: "
     read USERNAME
-    run_vpncmd "Hub $HUB_NAME /CMD UserDelete $USERNAME"
+    run_vpncmd "UserDelete $USERNAME"
     jq --arg u "$USERNAME" '.users |= map(select(.username != $u))' $JSON_FILE > $JSON_FILE.tmp && mv $JSON_FILE.tmp $JSON_FILE
     echo "User $USERNAME removed."
 }
 
 list_users() {
     echo "=== Users in Hub $HUB_NAME ==="
-    run_vpncmd "Hub $HUB_NAME /CMD UserList"
+    run_vpncmd "UserList"
 }
 
 hub_status() {
     echo "=== Hub $HUB_NAME Status ==="
-    run_vpncmd "Hub $HUB_NAME /CMD HubStatus"
+    run_vpncmd "HubStatus"
 }
 
 service_status() {
@@ -153,7 +155,7 @@ service_status() {
     TOTAL_USER=$(jq '.users | length' $JSON_FILE)
     echo "Total users: $TOTAL_USER"
     echo "=== Active listeners ==="
-    run_vpncmd "Hub $HUB_NAME /CMD ListenerList"
+    run_vpncmd "ListenerList"
     echo "=== NAT / Port Forwarding Rules ==="
     iptables -t nat -L -n -v | grep MASQUERADE || echo "No NAT rules found"
 }
