@@ -1,189 +1,139 @@
-#!/bin/bash
-# ========================================
-# DarkHole WireGuard UDP Manager - Professional Menu
-# Author: ChatGPT
-# ========================================
+#!/usr/bin/env python3
+import os, json, subprocess, time
 
-WG_CONF_DIR="/etc/darkhole"
-WG_CONF_FILE="$WG_CONF_DIR/wg0.conf"
-CLIENT_DIR="$WG_CONF_DIR/clients"
-SERVICE_NAME="darkhole"
-ADMIN_PASS="gstgg47e"
-VPN_SUBNET="10.66.66.0/24"
-VPN_SERVER_IP="10.66.66.1"
-SERVER_PORT=5667
+DARKHOLE_DIR="/usr/local/darkhole"
+USERS_FILE=f"{DARKHOLE_DIR}/users.json"
 
-# Colors
-RED="\e[31m"
-GREEN="\e[32m"
-YELLOW="\e[33m"
-CYAN="\e[36m"
-RESET="\e[0m"
+def log(msg):
+    timestamp = time.strftime("[%Y-%m-%d %H:%M:%S]")
+    print(f"{timestamp} {msg}")
 
-# Check if root
-if [[ $EUID -ne 0 ]]; then
-    echo -e "${RED}Please run as root${RESET}"
-    exit 1
-fi
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return []
+    with open(USERS_FILE,"r") as f:
+        return json.load(f)
 
-# ----------------------------
-# FUNCTIONS
-# ----------------------------
+def server_status():
+    try:
+        # Cek service
+        result = subprocess.run(["systemctl","is-active","darkhole"], capture_output=True, text=True)
+        status_service = result.stdout.strip()
+        
+        # Cek NAT / firewall
+        nat_status = subprocess.run(["iptables","-t","nat","-L","POSTROUTING"], capture_output=True, text=True)
+        nat_active = "Active" if "MASQUERADE" in nat_status.stdout else "Inactive"
+        
+        # Cek UDP port
+        udp_status = subprocess.run(["ss","-lunp"], capture_output=True, text=True)
+        udp_info = [line for line in udp_status.stdout.splitlines() if "5667" in line]
+        udp_display = udp_info[0] if udp_info else "Port 5667 not listening"
 
-pause() {
-    read -rp "Press Enter to continue..."
-}
+        # Total user
+        users = load_users()
+        total_user = len(users)
 
-check_service_status() {
-    systemctl is-active --quiet $SERVICE_NAME
-    if [[ $? -eq 0 ]]; then
-        echo -e "${GREEN}Running${RESET}"
-    else
-        echo -e "${RED}Stopped${RESET}"
-    fi
-}
+        print("="*60)
+        print(" DarkHole UDP VPN - Status Overview (Auto Refresh, Ctrl+C to exit)")
+        print("="*60)
+        print(f"Service Status    : {status_service}")
+        print(f"NAT / Firewall    : {nat_active}")
+        print(f"UDP Interface     : {udp_display}")
+        print(f"Total Users       : {total_user}")
+        print("="*60)
+    except Exception as e:
+        log(f"Error retrieving status: {e}")
 
-show_interface_status() {
-    ip a show wg0 2>/dev/null || echo -e "${RED}Interface wg0 not found${RESET}"
-}
+def add_user():
+    username = input("Enter username: ").strip()
+    password = input("Enter password: ").strip()
+    users = load_users()
+    ips = [u["ip"] for u in users]
+    next_ip = "10.66.66.2"
+    while next_ip in ips:
+        last = int(next_ip.split(".")[3])
+        next_ip = f"10.66.66.{last+1}"
+    new_user = {"username":username,"password":password,"ip":next_ip}
+    users.append(new_user)
+    with open(USERS_FILE,"w") as f:
+        json.dump(users,f,indent=2)
+    cfg_file = os.path.join(DARKHOLE_DIR,f"{username}.conf")
+    with open(cfg_file,"w") as f:
+        f.write(f"server_ip=SERVER_IP\n")
+        f.write(f"server_port=5667\n")
+        f.write(f"username={username}\n")
+        f.write(f"password={password}\n")
+    log(f"[OK] User {username} added with IP {next_ip}")
 
-show_nat_status() {
-    SYS_IF=$(ip -4 route ls | grep default | awk '{print $5}' | head -1)
-    NAT_RULE=$(iptables -t nat -L POSTROUTING -n | grep "$VPN_SUBNET" | grep "$SYS_IF")
-    if [[ -n "$NAT_RULE" ]]; then
-        echo -e "${GREEN}Active${RESET}"
-    else
-        echo -e "${RED}Inactive${RESET}"
-    fi
-}
+def remove_user():
+    username=input("Enter username to remove: ").strip()
+    users=load_users()
+    users=[u for u in users if u["username"]!=username]
+    with open(USERS_FILE,"w") as f:
+        json.dump(users,f,indent=2)
+    cfg_file = os.path.join(DARKHOLE_DIR,f"{username}.conf")
+    if os.path.exists(cfg_file):
+        os.remove(cfg_file)
+    log(f"[OK] User {username} removed")
 
-start_service() {
-    systemctl start $SERVICE_NAME
-    echo "Starting $SERVICE_NAME..."
-    sleep 1
-    check_service_status
-}
+def list_users():
+    users=load_users()
+    if not users:
+        log("No users")
+        return
+    for u in users:
+        log(f"{u['username']} | {u['password']} | {u['ip']}")
 
-stop_service() {
-    systemctl stop $SERVICE_NAME
-    echo "Stopping $SERVICE_NAME..."
-    sleep 1
-    check_service_status
-}
+def start_server():
+    subprocess.run(["systemctl","start","darkhole"])
 
-restart_service() {
-    systemctl restart $SERVICE_NAME
-    echo "Restarting $SERVICE_NAME..."
-    sleep 1
-    check_service_status
-}
+def stop_server():
+    subprocess.run(["systemctl","stop","darkhole"])
 
-list_users() {
-    echo -e "${CYAN}=== Users ===${RESET}"
-    if [ -d "$CLIENT_DIR" ]; then
-        ls "$CLIENT_DIR"
-    else
-        echo "No users found"
-    fi
-    pause
-}
+def restart_server():
+    subprocess.run(["systemctl","restart","darkhole"])
 
-add_user() {
-    read -rp "Enter username: " uname
-    read -sp "Enter password: " upass
-    echo
-    CLIENT_IP_LAST=$(($(ls "$CLIENT_DIR" 2>/dev/null | wc -l) + 2))
-    CLIENT_IP="10.66.66.$CLIENT_IP_LAST"
-    CLIENT_PRIV=$(wg genkey)
-    CLIENT_PUB=$(echo $CLIENT_PRIV | wg pubkey)
+def status_menu():
+    try:
+        while True:
+            os.system("clear")
+            server_status()
+            time.sleep(3)
+    except KeyboardInterrupt:
+        print("\nExiting status view...")
 
-    # Add peer to server config
-    cat >> "$WG_CONF_FILE" <<EOF
+def menu():
+    while True:
+        print("="*50)
+        print(" DarkHole UDP VPN Manager - Production")
+        print("="*50)
+        print("1) Add User")
+        print("2) Remove User")
+        print("3) List Users")
+        print("4) Status Overview (Auto Refresh)")
+        print("5) Start VPN Service")
+        print("6) Stop VPN Service")
+        print("7) Restart VPN Service")
+        print("8) Exit")
+        choice=input("Choose an option: ").strip()
+        if choice=="1":
+            add_user()
+        elif choice=="2":
+            remove_user()
+        elif choice=="3":
+            list_users()
+        elif choice=="4":
+            status_menu()
+        elif choice=="5":
+            start_server()
+        elif choice=="6":
+            stop_server()
+        elif choice=="7":
+            restart_server()
+        elif choice=="8":
+            exit()
+        else:
+            log("Invalid choice!")
 
-[Peer]
-PublicKey = $CLIENT_PUB
-AllowedIPs = $CLIENT_IP/32
-EOF
-
-    # Save client config
-    mkdir -p "$CLIENT_DIR"
-    cat > "$CLIENT_DIR/$uname.conf" <<EOF
-[Interface]
-PrivateKey = $CLIENT_PRIV
-Address = $CLIENT_IP/24
-DNS = 1.1.1.1
-
-[Peer]
-PublicKey = $(cat "$WG_CONF_DIR/server_public.key")
-Endpoint = $(curl -s ifconfig.me):$SERVER_PORT
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 25
-EOF
-
-    wg-quick down $WG_CONF_FILE 2>/dev/null || true
-    wg-quick up $WG_CONF_FILE
-
-    echo -e "${GREEN}User $uname added successfully!${RESET}"
-    echo "Client config saved: $CLIENT_DIR/$uname.conf"
-    pause
-}
-
-remove_user() {
-    read -rp "Enter username to remove: " uname
-    if [ -f "$CLIENT_DIR/$uname.conf" ]; then
-        CLIENT_IP=$(grep Address "$CLIENT_DIR/$uname.conf" | awk '{print $3}' | cut -d/ -f1)
-        sed -i "/$CLIENT_IP/,+3d" $WG_CONF_FILE
-        rm -f "$CLIENT_DIR/$uname.conf"
-        wg-quick down $WG_CONF_FILE 2>/dev/null || true
-        wg-quick up $WG_CONF_FILE
-        echo -e "${GREEN}User $uname removed successfully${RESET}"
-    else
-        echo -e "${RED}User not found${RESET}"
-    fi
-    pause
-}
-
-status_overview() {
-    echo -e "${CYAN}=== DarkHole Status Overview ===${RESET}"
-    echo -n "Service: "
-    check_service_status
-    echo -n "Interface wg0: "
-    show_interface_status
-    echo -n "NAT / Firewall: "
-    show_nat_status
-    echo -n "Total Users: "
-    ls "$CLIENT_DIR" 2>/dev/null | wc -l
-    pause
-}
-
-# ----------------------------
-# MENU LOOP
-# ----------------------------
-
-while true; do
-    clear
-    echo -e "${CYAN}==========================================${RESET}"
-    echo -e "${CYAN} DarkHole WireGuard UDP Manager${RESET}"
-    echo -e "${CYAN} Admin: $ADMIN_PASS${RESET}"
-    echo -e "${CYAN}==========================================${RESET}"
-    echo "1) Add User"
-    echo "2) Remove User"
-    echo "3) List Users"
-    echo "4) Status Overview"
-    echo "5) Start VPN Service"
-    echo "6) Stop VPN Service"
-    echo "7) Restart VPN Service"
-    echo "8) Exit"
-    read -rp "Choose an option: " opt
-    case $opt in
-        1) add_user ;;
-        2) remove_user ;;
-        3) list_users ;;
-        4) status_overview ;;
-        5) start_service ;;
-        6) stop_service ;;
-        7) restart_service ;;
-        8) exit 0 ;;
-        *) echo -e "${RED}Invalid option${RESET}" ; pause ;;
-    esac
-done
+if __name__=="__main__":
+    menu()
