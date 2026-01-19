@@ -1,0 +1,13 @@
+[Unit]
+Description=ZiVPN Manager Realtime Controller
+After=network.target zivpn.service
+Requires=zivpn.service
+
+[Service]
+Type=simple
+ExecStart=/opt/zivpn/realtime.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
