@@ -1,0 +1,6 @@
+[Unit]
+Description=ZiVPN Password Cleaner
+
+[Service]
+Type=oneshot
+ExecStart=/etc/zivpn/ziman-cleaner.sh
