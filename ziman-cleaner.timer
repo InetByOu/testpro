@@ -1,0 +1,10 @@
+[Unit]
+Description=ZiVPN Password Expiry Timer
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
